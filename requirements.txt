@@ -1,0 +1,13 @@
+pandas
+numpy
+networkx
+simpy
+
+matplotlib
+streamlit
+plotly
+
+pyyaml
+pytest
+
+ortools

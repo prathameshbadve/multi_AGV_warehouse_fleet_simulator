@@ -1,0 +1,45 @@
+# Default warehouse configuration
+# Models an Amazon-style pod storage fulfillment center with paired one-way aisles
+
+warehouse:
+  n_aisles: 10 # Total one-way aisles (must be even; forms 5 pairs)
+  bays_per_aisle: 20 # Storage bays per aisle per highway segment
+  bay_depth_m: 1.5 # Meters between bays along an aisle
+  inner_pair_gap_m: 2.0 # Center-to-center between paired aisles
+  pair_spacing_m: 7.0 # Center-to-center between left aisles of consecutive pairs
+  rack_offset_m: 1.5 # Storage rack offset from aisle center
+  uturn_interval: 5 # U-turn cross-link every N bays
+  highway_capacity: 2 # Max concurrent AGVs on a highway edge
+
+stations:
+  n_pick_stations: 4
+  n_charging_stations: 4
+  n_parking_spots: 12
+  pick_station_position: "south"
+
+agv:
+  speed_mps: 1.5
+  battery_capacity_pct: 100.0
+  battery_drain_per_meter: 0.08
+  battery_drain_per_lift: 0.5
+  battery_charge_rate: 0.5
+  battery_threshold: 20.0
+  pod_pickup_time_s: 5.0
+  pod_dropoff_time_s: 5.0
+
+orders:
+  base_rate_per_min: 8.0
+  items_per_order_min: 1
+  items_per_order_max: 8
+  items_per_order_mean: 4.0
+  express_fraction: 0.1
+
+pick_station:
+  processing_shape: 4.0
+  processing_scale: 7.5
+
+simulation:
+  duration_hours: 4.0
+  dispatch_interval_s: 5.0
+  metrics_interval_s: 60.0
+  random_seed: 42
