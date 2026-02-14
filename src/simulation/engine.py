@@ -13,22 +13,22 @@ Usage:
 The engine uses a task dispatcher that runs as a SimPy process,
 periodically checking for pending tasks and assigning them to idle AGVs.
 
-Module 1 MVP: uses greedy nearest-AGV assignment. Module 2 replaces
-this with CP-SAT optimization via a pluggable dispatcher strategy.
+Module 1: greedy nearest-AGV assignment.
+Module 2: CP-SAT optimizer (default, with greedy fallback).
 """
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Literal
 
 import numpy as np
 import simpy
 
-from src.warehouse.config import WarehouseConfig
+from src.warehouse.config import WarehouseConfig, load_config
 from src.warehouse.graph import WarehouseGraph, NodeType
 from src.warehouse.layout import GridLayoutGenerator
 from src.simulation.agv import AGV, AGVState, TeleportMovement
-from src.simulation.orders import OrderGenerator, Task, TaskStatus, OrderStatus, OrderPriority
+from src.simulation.orders import OrderGenerator, Task, TaskStatus, OrderStatus
 from src.simulation.stations import (
     create_pick_station_resources,
     create_charging_station_resources,
@@ -43,24 +43,32 @@ class SimulationEngine:
     Args:
         config: Full warehouse configuration.
         n_agvs: Number of AGVs to deploy.
-        assignment_fn: Optional custom assignment function.
+        assignment_strategy: Which assignment solver to use.
+            "cpsat" (default) uses Module 2 CP-SAT optimizer with greedy fallback.
+            "greedy" uses Module 1 nearest-neighbor baseline.
+        assignment_fn: Optional custom assignment function (overrides strategy).
             Signature: (pending_tasks, idle_agvs, warehouse) → list[(AGV, Task)]
-            If None, uses greedy nearest-neighbor.
     """
 
     def __init__(
         self,
         config: WarehouseConfig,
         n_agvs: int = 50,
+        assignment_strategy: Literal["cpsat", "greedy"] = "cpsat",
         assignment_fn: Callable | None = None,
     ) -> None:
         self.config = config
         self.n_agvs = n_agvs
-        self.assignment_fn = assignment_fn or self._greedy_assignment
+        self.assignment_strategy = assignment_strategy
+        self._custom_assignment_fn = assignment_fn
 
         self.warehouse: WarehouseGraph | None = None
         self.agvs: list[AGV] = []
         self.metrics: SimulationMetrics | None = None
+
+        # Tracks AGVs assigned to each station but not yet arrived/processing.
+        # Updated by the dispatcher; read by the CP-SAT solver for balancing.
+        self._inflight_station_counts: dict[str, int] = {}
 
     def run(self) -> SimulationMetrics:
         """Execute the full simulation and return results.
@@ -73,11 +81,6 @@ class SimulationEngine:
         self.warehouse = layout_gen.generate()
 
         # Precompute distances for assignment heuristic
-        _ = (
-            self.warehouse.nodes_by_type(NodeType.PICK_STATION)
-            + self.warehouse.nodes_by_type(NodeType.CHARGING)
-            + self.warehouse.nodes_by_type(NodeType.STORAGE)
-        )
         self.warehouse.precompute_distances()  # all-pairs for MVP scale
 
         # ── Setup SimPy environment ──────────────────────────────────
@@ -91,6 +94,12 @@ class SimulationEngine:
 
         pick_resources = create_pick_station_resources(env, pick_station_ids)
         charging_resources = create_charging_station_resources(env, charging_station_ids)
+
+        # Initialize inflight counter
+        self._inflight_station_counts = {sid: 0 for sid in pick_station_ids}
+
+        # ── Create assignment function ────────────────────────────────
+        assignment_fn = self._build_assignment_fn(pick_resources)
 
         # ── Create movement strategy ─────────────────────────────────
         movement = TeleportMovement(self.warehouse, self.config.agv.speed_mps)
@@ -139,28 +148,23 @@ class SimulationEngine:
         env.process(collector.run())
 
         # ── Create task dispatcher ───────────────────────────────────
-        env.process(self._dispatcher_process(env, order_gen))
+        env.process(
+            self._dispatcher_process(env, order_gen, assignment_fn)
+        )
 
         # ── Run! ─────────────────────────────────────────────────────
         duration = self.config.simulation.duration_s
-        print(
-            f"Starting simulation: {self.n_agvs} AGVs, "
-            f"{self.config.stations.n_pick_stations} pick stations, "
-            f"{duration / 3600:.1f} hours"
-        )
+        print(f"Starting simulation: {self.n_agvs} AGVs, "
+              f"{self.config.stations.n_pick_stations} pick stations, "
+              f"{duration/3600:.1f} hours, "
+              f"assignment={self.assignment_strategy}")
 
         env.run(until=duration)
-
-        # ── Mark remaining orders by status ──────────────────────────
-        # Orders that were being processed when sim ended
-        for order in order_gen.orders:
-            if order.status not in (OrderStatus.COMPLETE,):
-                pass  # leave as-is for analysis
 
         # ── Compute final metrics ────────────────────────────────────
         self.metrics = collector.compute_final_metrics()
 
-        print("\nSimulation complete:")
+        print(f"\nSimulation complete:")
         print(f"  Orders generated: {self.metrics.total_orders_generated}")
         print(f"  Orders completed: {self.metrics.total_orders_completed}")
         print(f"  Avg throughput:   {self.metrics.avg_throughput_per_hour:.0f} orders/hour")
@@ -171,7 +175,38 @@ class SimulationEngine:
 
         return self.metrics
 
-    def _dispatcher_process(self, env: simpy.Environment, order_gen: OrderGenerator):
+    # ── Assignment function factory ───────────────────────────────
+
+    def _build_assignment_fn(
+        self, pick_resources: dict[str, simpy.Resource]
+    ) -> Callable:
+        """Build the assignment function based on the selected strategy.
+
+        If a custom assignment_fn was provided, use it directly.
+        Otherwise, construct the appropriate solver.
+        """
+        if self._custom_assignment_fn is not None:
+            return self._custom_assignment_fn
+
+        if self.assignment_strategy == "cpsat":
+            from src.assignment.solver import CPSATAssignmentSolver
+
+            solver = CPSATAssignmentSolver(
+                pick_station_resources=pick_resources,
+                inflight_station_counts=self._inflight_station_counts,
+            )
+            return solver.solve
+
+        return self._greedy_assignment
+
+    # ── Dispatcher ────────────────────────────────────────────────
+
+    def _dispatcher_process(
+        self,
+        env: simpy.Environment,
+        order_gen: OrderGenerator,
+        assignment_fn: Callable,
+    ):
         """SimPy process: periodically assign pending tasks to idle AGVs.
 
         Runs every `dispatch_interval_s` seconds. Collects pending tasks
@@ -184,21 +219,25 @@ class SimulationEngine:
         yield env.timeout(interval)
 
         while True:
+            # Update inflight station counts from currently assigned tasks
+            self._update_inflight_counts()
+
             # Gather pending tasks
-            _ = order_gen.get_and_clear_pending()
+            new_tasks = order_gen.get_and_clear_pending()
 
             # Also include previously unassigned tasks that are still pending
             # (tasks where no AGV was available last cycle)
-            pending_tasks = [t for t in order_gen.tasks if t.status == TaskStatus.UNASSIGNED]
+            pending_tasks = [
+                t for t in order_gen.tasks
+                if t.status == TaskStatus.UNASSIGNED
+            ]
 
             if pending_tasks:
                 # Find idle AGVs
-                idle_agvs = [
-                    a for a in self.agvs if a.state == AGVState.IDLE and a.current_task is None
-                ]
+                idle_agvs = [a for a in self.agvs if a.state == AGVState.IDLE and a.current_task is None]
 
                 if idle_agvs:
-                    assignments = self.assignment_fn(pending_tasks, idle_agvs, self.warehouse)
+                    assignments = assignment_fn(pending_tasks, idle_agvs, self.warehouse)
                     for agv, task in assignments:
                         task.status = TaskStatus.ASSIGNED
                         if task.order_ref is not None:
@@ -206,6 +245,29 @@ class SimulationEngine:
                         agv.assign_task(task)
 
             yield env.timeout(interval)
+
+    def _update_inflight_counts(self) -> None:
+        """Count AGVs heading to each station but not yet processing.
+
+        An AGV is "inflight" to station S if it has been assigned a task
+        targeting S and is in state TRAVELING_TO_POD, PICKING_UP_POD,
+        or TRAVELING_TO_STATION.
+        """
+        inflight_states = {
+            AGVState.TRAVELING_TO_POD,
+            AGVState.PICKING_UP_POD,
+            AGVState.TRAVELING_TO_STATION,
+        }
+
+        # Reset counts
+        for sid in self._inflight_station_counts:
+            self._inflight_station_counts[sid] = 0
+
+        for agv in self.agvs:
+            if agv.state in inflight_states and agv.current_task is not None:
+                station = agv.current_task.pick_station
+                if station in self._inflight_station_counts:
+                    self._inflight_station_counts[station] += 1
 
     @staticmethod
     def _greedy_assignment(
@@ -216,11 +278,12 @@ class SimulationEngine:
         """Greedy nearest-neighbor assignment.
 
         For each task (in priority order), assign the closest idle AGV.
-        This is the Module 1 baseline. Module 2 replaces it with CP-SAT.
+        This is the Module 1 baseline.
 
         Returns:
             List of (AGV, Task) pairs.
         """
+        from src.simulation.orders import OrderPriority
 
         # Sort tasks: express first, then by creation time
         sorted_tasks = sorted(
@@ -247,7 +310,7 @@ class SimulationEngine:
                     if dist < best_dist:
                         best_dist = dist
                         best_agv_id = agv_id
-                except Exception:  # pylint: disable=broad-exception-caught
+                except Exception:
                     continue
 
             if best_agv_id is not None:

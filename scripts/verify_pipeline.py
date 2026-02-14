@@ -14,6 +14,9 @@ Each check is independent. If check N fails, the bug is in that stage.
 """
 
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
 
 from src.warehouse.config import (
     WarehouseConfig,
@@ -28,16 +31,12 @@ from src.warehouse.layout import GridLayoutGenerator
 
 
 def section(title: str) -> None:
-    """Creates a section in the CLI display"""
-
-    print(f"\n{'=' * 60}")
+    print(f"\n{'='*60}")
     print(f"  {title}")
-    print(f"{'=' * 60}")
+    print(f"{'='*60}")
 
 
 def check(label: str, condition: bool, detail: str = "") -> bool:
-    """Checks if a condition is passed."""
-
     status = "✅ PASS" if condition else "❌ FAIL"
     msg = f"  {status}: {label}"
     if detail:
@@ -50,13 +49,13 @@ def check(label: str, condition: bool, detail: str = "") -> bool:
 # STAGE 1: Warehouse graph construction (no SimPy needed)
 # ─────────────────────────────────────────────────────────────
 def verify_warehouse() -> tuple[WarehouseConfig, WarehouseGraph]:
-    """Verify that a warehouse config is valid ang the graph is constructed as per the config."""
-
     section("STAGE 1: Warehouse Graph")
 
     config = WarehouseConfig(
         warehouse=WarehouseLayoutConfig(n_aisles=4, bays_per_aisle=10),
-        stations=StationConfig(n_pick_stations=2, n_charging_stations=2, n_parking_spots=4),
+        stations=StationConfig(
+            n_pick_stations=2, n_charging_stations=2, n_parking_spots=4
+        ),
         agv=AGVConfig(),
         orders=OrderConfig(base_rate_per_min=4.0),
         simulation=SimulationConfig(duration_hours=0.25, random_seed=42),
@@ -117,8 +116,6 @@ def verify_warehouse() -> tuple[WarehouseConfig, WarehouseGraph]:
 # STAGE 2: Order generation (needs SimPy)
 # ─────────────────────────────────────────────────────────────
 def verify_order_generation(config: WarehouseConfig, wh: WarehouseGraph):
-    """Verify order geneartion is happening correctly."""
-
     section("STAGE 2: Order & Task Generation")
 
     import numpy as np
@@ -146,10 +143,7 @@ def verify_order_generation(config: WarehouseConfig, wh: WarehouseGraph):
     if n_tasks > 0:
         task = order_gen.tasks[0]
         check("Task has valid pod_location", task.pod_location in [n for n in wh.graph.nodes])
-        check(
-            "Task has valid pick_station",
-            task.pick_station in wh.nodes_by_type(NodeType.PICK_STATION),
-        )
+        check("Task has valid pick_station", task.pick_station in wh.nodes_by_type(NodeType.PICK_STATION))
         check("Task status is UNASSIGNED", task.status == TaskStatus.UNASSIGNED)
         check(
             "Task has back-reference to Order",
@@ -172,8 +166,6 @@ def verify_order_generation(config: WarehouseConfig, wh: WarehouseGraph):
 # STAGE 3: AGV state machine (single AGV, manual task)
 # ─────────────────────────────────────────────────────────────
 def verify_agv_lifecycle(config: WarehouseConfig, wh: WarehouseGraph):
-    """VErify that AGV are cycling through the state machine correctly."""
-
     section("STAGE 3: Single AGV Lifecycle")
 
     import numpy as np
@@ -231,16 +223,13 @@ def verify_agv_lifecycle(config: WarehouseConfig, wh: WarehouseGraph):
     print(f"\n  Assigning task: {start_pos} → pod@{storage[5]} → station@{ps_ids[0]} → return")
     agv.assign_task(task)
     check("Task assigned to AGV", agv.current_task is not None)
-    check(
-        "Task status set to ASSIGNED",
-        task.status == TaskStatus.UNASSIGNED or True,
-        "(status updated by dispatcher, not assign_task — this is expected)",
-    )
+    check("Task status set to ASSIGNED", task.status == TaskStatus.UNASSIGNED or True,
+          "(status updated by dispatcher, not assign_task — this is expected)")
 
     # Run long enough for the full cycle
     env.run(until=600)  # 10 minutes should be more than enough
 
-    print("\n  After 600s simulation:")
+    print(f"\n  After 600s simulation:")
     print(f"    AGV state: {agv.state.name}")
     print(f"    AGV position: {agv.position}")
     print(f"    Task status: {task.status.name}")
@@ -270,8 +259,6 @@ def verify_agv_lifecycle(config: WarehouseConfig, wh: WarehouseGraph):
 # STAGE 4: Full integration (mini simulation)
 # ─────────────────────────────────────────────────────────────
 def verify_full_simulation(config: WarehouseConfig):
-    """Verify the entire end to end simulation"""
-
     section("STAGE 4: Full Integration (15-minute sim, 10 AGVs)")
 
     from src.simulation.engine import SimulationEngine
@@ -280,9 +267,8 @@ def verify_full_simulation(config: WarehouseConfig):
     results = engine.run()
 
     print()
-    check(
-        "Orders generated", results.total_orders_generated > 0, f"{results.total_orders_generated}"
-    )
+    check("Orders generated", results.total_orders_generated > 0,
+          f"{results.total_orders_generated}")
     check(
         "Orders completed > 0",
         results.total_orders_completed > 0,
@@ -295,28 +281,24 @@ def verify_full_simulation(config: WarehouseConfig):
         else 0
     )
     check("Completion rate > 10%", completion_rate > 10, f"{completion_rate:.1f}%")
-    check(
-        "Throughput > 0",
-        results.avg_throughput_per_hour > 0,
-        f"{results.avg_throughput_per_hour:.0f} orders/hr",
-    )
-    check("Avg cycle time > 0", results.avg_cycle_time_s > 0, f"{results.avg_cycle_time_s:.1f}s")
-    check(
-        "P95 cycle time > avg",
-        results.p95_cycle_time_s >= results.avg_cycle_time_s,
-        f"p95={results.p95_cycle_time_s:.1f}s, avg={results.avg_cycle_time_s:.1f}s",
-    )
-    check(
-        "AGV utilization > 0%",
-        results.avg_agv_utilization_pct > 0,
-        f"{results.avg_agv_utilization_pct:.1f}%",
-    )
-    check("Snapshots collected", len(results.snapshots) > 0, f"{len(results.snapshots)} snapshots")
+    check("Throughput > 0", results.avg_throughput_per_hour > 0,
+          f"{results.avg_throughput_per_hour:.0f} orders/hr")
+    check("Avg cycle time > 0", results.avg_cycle_time_s > 0,
+          f"{results.avg_cycle_time_s:.1f}s")
+    check("P95 cycle time > avg", results.p95_cycle_time_s >= results.avg_cycle_time_s,
+          f"p95={results.p95_cycle_time_s:.1f}s, avg={results.avg_cycle_time_s:.1f}s")
+    check("AGV utilization > 0%", results.avg_agv_utilization_pct > 0,
+          f"{results.avg_agv_utilization_pct:.1f}%")
+    check("Snapshots collected", len(results.snapshots) > 0,
+          f"{len(results.snapshots)} snapshots")
     check("All AGVs have summaries", len(results.agv_summaries) == 10)
 
     # Verify at least some AGVs actually did work
-    active_agvs = sum(1 for s in results.agv_summaries.values() if s["tasks_completed"] > 0)
-    check("Multiple AGVs completed tasks", active_agvs > 1, f"{active_agvs}/10 AGVs active")
+    active_agvs = sum(
+        1 for s in results.agv_summaries.values() if s["tasks_completed"] > 0
+    )
+    check("Multiple AGVs completed tasks", active_agvs > 1,
+          f"{active_agvs}/10 AGVs active")
 
     # Check for suspicious patterns
     total_tasks_by_agvs = sum(s["tasks_completed"] for s in results.agv_summaries.values())
@@ -341,8 +323,6 @@ def verify_full_simulation(config: WarehouseConfig):
 # STAGE 5: Consistency invariants
 # ─────────────────────────────────────────────────────────────
 def verify_invariants(config: WarehouseConfig):
-    """Check invariants"""
-
     section("STAGE 5: Invariant Checks")
 
     from src.simulation.engine import SimulationEngine
@@ -381,6 +361,95 @@ def verify_invariants(config: WarehouseConfig):
 
 
 # ─────────────────────────────────────────────────────────────
+# STAGE 6: Module 2 — Assignment Solver (standalone, no SimPy)
+# ─────────────────────────────────────────────────────────────
+def verify_assignment(config: WarehouseConfig, wh: WarehouseGraph):
+    section("STAGE 6: Module 2 — Assignment Solver")
+
+    from src.warehouse.config import AGVConfig
+    from src.simulation.orders import Task, Order, OrderPriority
+    from src.assignment.cost_matrix import compute_cost_matrix
+    from src.assignment.solver import CPSATAssignmentSolver, SolverStatus
+
+    agv_config = AGVConfig()
+    storage = wh.nodes_by_type(NodeType.STORAGE)
+    ps = wh.nodes_by_type(NodeType.PICK_STATION)
+
+    # Mock AGV (no SimPy needed)
+    class _MockAGV:
+        def __init__(self, agv_id, position, battery_pct, cfg):
+            self.id = agv_id
+            self.position = position
+            self.battery_pct = battery_pct
+            self.config = cfg
+            self.state = "IDLE"
+            self.current_task = None
+
+    def _make_task(tid, pod, station, priority=OrderPriority.STANDARD):
+        order = Order(id=f"O_{tid}", arrival_time=0, n_items=3, priority=priority)
+        return Task(
+            id=tid, order_id=order.id, pod_location=pod,
+            pick_station=station, return_location=pod,
+            order_ref=order, priority=priority, created_time=0.0,
+        )
+
+    # 6a: Cost matrix
+    agvs = [_MockAGV(f"AGV_{i}", storage[i], 100.0, agv_config) for i in range(5)]
+    tasks = [_make_task(f"T{i}", storage[i + 10], ps[i % len(ps)]) for i in range(4)]
+
+    matrix = compute_cost_matrix(tasks, agvs, wh, agv_config)
+    check("Cost matrix dimensions", matrix.n_agvs == 5 and matrix.n_tasks == 4)
+    check("All pairs feasible at 100% battery",
+          all(matrix.feasible[a][t] for a in range(5) for t in range(4)))
+
+    # 6b: Low-battery infeasibility
+    low_agv = [_MockAGV("AGV_LOW", storage[0], 21.0, agv_config)]
+    far_task = [_make_task("T_FAR", storage[-1], ps[0])]
+    low_matrix = compute_cost_matrix(far_task, low_agv, wh, agv_config)
+    check("Low-battery AGV rejected for far task",
+          low_matrix.feasible[0][0] is False,
+          f"feasible={low_matrix.feasible[0][0]}")
+
+    # 6c: CP-SAT solver
+    try:
+        from ortools.sat.python import cp_model  # noqa: F401
+        has_ortools = True
+    except ImportError:
+        has_ortools = False
+        print("  ⚠️  OR-Tools not installed — testing greedy fallback only")
+
+    solver = CPSATAssignmentSolver()
+    result = solver.solve_with_diagnostics(tasks, agvs, wh)
+
+    if has_ortools:
+        check("CP-SAT finds solution",
+              result.solver_status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE),
+              result.solver_status.name)
+    else:
+        check("Greedy fallback used",
+              result.solver_status == SolverStatus.FALLBACK_GREEDY)
+
+    check("Assignments produced", len(result.assignments) > 0,
+          f"{len(result.assignments)} assignments")
+    check("Solve time < 100ms", result.solve_time_ms < 100,
+          f"{result.solve_time_ms:.1f}ms")
+
+    # 6d: Express priority
+    express_tasks = [
+        _make_task("T_STD", storage[2], ps[0]),
+        _make_task("T_EXP", storage[5], ps[0], OrderPriority.EXPRESS),
+    ]
+    exp_agvs = [_MockAGV("AGV_0", storage[0], 100.0, agv_config)]
+    exp_result = solver.solve_with_diagnostics(express_tasks, exp_agvs, wh)
+    assigned_ids = {t.id for _, t in exp_result.assignments}
+    check("Express task prioritized", "T_EXP" in assigned_ids, f"assigned: {assigned_ids}")
+
+    print(f"\n  Solver stats: {solver.total_solves} solves, "
+          f"{solver.total_solve_time_ms:.1f}ms total, "
+          f"{solver.total_fallbacks} fallbacks")
+
+
+# ─────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -397,6 +466,7 @@ if __name__ == "__main__":
 
     verify_order_generation(config, wh)
     verify_agv_lifecycle(config, wh)
+    verify_assignment(config, wh)
     verify_full_simulation(config)
     verify_invariants(config)
 
