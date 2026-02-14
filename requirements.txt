@@ -3,6 +3,8 @@ pandas
 numpy
 networkx
 simpy
+fastapi
+uvicorn
 
 matplotlib
 streamlit

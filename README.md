@@ -34,6 +34,50 @@ A pure optimization model would give you the "optimal" answer under assumed cond
 
 **Key design principle:** Each module has a clean interface (input/output contract). You can unit-test Module 2 with a mock warehouse. You can demo Module 1 with random-walk AGVs before pathfinding exists.
 
+## Live UI MVP (FastAPI + React)
+
+The project now includes a real-time UI stack that streams simulation state to a browser:
+
+- **Backend:** `FastAPI` + WebSocket endpoint at `/api/simulation/ws`
+- **Frontend:** `Vite` + `React` + `TypeScript` app in `ui/`
+- **Refresh rate:** configurable, default `10 Hz`
+- **Congestion metric:** node occupancy + directed edge occupancy
+- **Run model:** one simulation run per WebSocket request, ephemeral (no persistence)
+
+### Run the backend
+
+```bash
+python scripts/run_ui_api.py --host 0.0.0.0 --port 8000
+```
+
+### Run the frontend
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`.
+
+### WebSocket query params
+
+`/api/simulation/ws?n_agvs=40&hours=0.25&seed=42&strategy=cpsat&hz=10`
+
+- `n_agvs`: fleet size
+- `hours`: simulation duration
+- `seed`: random seed
+- `strategy`: `cpsat` or `greedy`
+- `hz`: runtime snapshot frequency
+
+### Stream event types
+
+- `started`: confirms run settings
+- `layout`: static warehouse graph (nodes, edges, bounds)
+- `snapshot`: live state (AGVs, congestion, metrics)
+- `completed`: final KPI summary
+- `error`: runtime error payload
+
 ## Module 1 - Warehouse Environment & Discrete Event Simulation
 
 ### 3.1 Purpose

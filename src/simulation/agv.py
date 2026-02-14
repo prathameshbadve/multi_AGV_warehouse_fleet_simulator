@@ -13,6 +13,7 @@ pluggable movement strategy.
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Protocol
@@ -109,6 +110,19 @@ class AGVMetrics:
         self.state_log.append((time, state))
 
 
+@dataclass
+class ActiveTravel:
+    """In-flight movement metadata used for live interpolation."""
+
+    from_node: str
+    to_node: str
+    path_nodes: list[str]
+    edge_distances_m: list[float]
+    cumulative_distances_m: list[float]
+    start_time_s: float
+    end_time_s: float
+
+
 class AGV:
     """A single Automated Guided Vehicle running as a SimPy process.
 
@@ -145,6 +159,7 @@ class AGV:
         self.battery_pct = config.battery_capacity_pct
         self.current_task: Task | None = None
         self.metrics = AGVMetrics()
+        self._active_travel: ActiveTravel | None = None
 
         # SimPy event: dispatcher sets this to wake up an idle AGV
         self.task_assigned_event = env.event()
@@ -185,6 +200,95 @@ class AGV:
         if not self.task_assigned_event.triggered:
             self.task_assigned_event.succeed()
 
+    def _start_active_travel(self, to_node: str, distance_m: float) -> None:
+        """Store path/time metadata for live interpolation during travel."""
+
+        from_node = self.position
+        if from_node == to_node:
+            self._active_travel = None
+            return
+
+        path_nodes = self.warehouse.shortest_path(from_node, to_node)
+        edge_distances = [
+            self.warehouse.edge_distance(path_nodes[i], path_nodes[i + 1])
+            for i in range(len(path_nodes) - 1)
+        ]
+        cumulative = [0.0]
+        for edge_dist in edge_distances:
+            cumulative.append(cumulative[-1] + edge_dist)
+
+        travel_time_s = distance_m / self.config.speed_mps if self.config.speed_mps > 0 else 0.0
+        self._active_travel = ActiveTravel(
+            from_node=from_node,
+            to_node=to_node,
+            path_nodes=path_nodes,
+            edge_distances_m=edge_distances,
+            cumulative_distances_m=cumulative,
+            start_time_s=self.env.now,
+            end_time_s=self.env.now + travel_time_s,
+        )
+
+    def _clear_active_travel(self) -> None:
+        self._active_travel = None
+
+    def current_edge(self, now_s: float) -> tuple[str, str] | None:
+        """Return the directed edge currently traversed, if any."""
+
+        travel = self._active_travel
+        if travel is None or len(travel.path_nodes) < 2:
+            return None
+
+        total_dist = travel.cumulative_distances_m[-1]
+        if total_dist <= 0:
+            return None
+
+        duration = travel.end_time_s - travel.start_time_s
+        if duration <= 0:
+            return None
+
+        progress = max(0.0, min(1.0, (now_s - travel.start_time_s) / duration))
+        if progress >= 1.0:
+            return None
+
+        dist_along_path = progress * total_dist
+        seg_idx = bisect.bisect_right(travel.cumulative_distances_m, dist_along_path) - 1
+        seg_idx = max(0, min(seg_idx, len(travel.path_nodes) - 2))
+        return travel.path_nodes[seg_idx], travel.path_nodes[seg_idx + 1]
+
+    def live_position(self, now_s: float) -> tuple[float, float]:
+        """Interpolated XY position for UI rendering at simulation time now_s."""
+
+        travel = self._active_travel
+        if travel is None or len(travel.path_nodes) < 2:
+            node = self.warehouse.get_node(self.position)
+            return float(node["x"]), float(node["y"])
+
+        total_dist = travel.cumulative_distances_m[-1]
+        duration = travel.end_time_s - travel.start_time_s
+        if total_dist <= 0 or duration <= 0:
+            node = self.warehouse.get_node(travel.to_node)
+            return float(node["x"]), float(node["y"])
+
+        progress = max(0.0, min(1.0, (now_s - travel.start_time_s) / duration))
+        if progress >= 1.0:
+            node = self.warehouse.get_node(travel.to_node)
+            return float(node["x"]), float(node["y"])
+
+        dist_along_path = progress * total_dist
+        seg_idx = bisect.bisect_right(travel.cumulative_distances_m, dist_along_path) - 1
+        seg_idx = max(0, min(seg_idx, len(travel.path_nodes) - 2))
+
+        seg_start = travel.cumulative_distances_m[seg_idx]
+        seg_len = travel.edge_distances_m[seg_idx]
+        seg_ratio = 0.0 if seg_len <= 0 else (dist_along_path - seg_start) / seg_len
+
+        from_node = self.warehouse.get_node(travel.path_nodes[seg_idx])
+        to_node = self.warehouse.get_node(travel.path_nodes[seg_idx + 1])
+
+        x = float(from_node["x"]) + seg_ratio * (float(to_node["x"]) - float(from_node["x"]))
+        y = float(from_node["y"]) + seg_ratio * (float(to_node["y"]) - float(from_node["y"]))
+        return x, y
+
     def run(self):
         """Main SimPy process loop. Runs for the lifetime of the simulation."""
 
@@ -209,8 +313,10 @@ class AGV:
             distance = self.movement.compute_travel_distance(
                 self.id, self.position, task.pod_location
             )
+            self._start_active_travel(task.pod_location, distance)
             yield from self.movement.move(self.env, self.id, self.position, task.pod_location)
             self.position = task.pod_location
+            self._clear_active_travel()
             self._drain_battery(distance)
             self.metrics.total_distance_m += distance
             self.metrics.total_travel_time_s += distance / self.config.speed_mps
@@ -225,8 +331,10 @@ class AGV:
             distance = self.movement.compute_travel_distance(
                 self.id, self.position, task.pick_station
             )
+            self._start_active_travel(task.pick_station, distance)
             yield from self.movement.move(self.env, self.id, self.position, task.pick_station)
             self.position = task.pick_station
+            self._clear_active_travel()
             self._drain_battery(distance)
             self.metrics.total_distance_m += distance
             self.metrics.total_travel_time_s += distance / self.config.speed_mps
@@ -257,8 +365,10 @@ class AGV:
             distance = self.movement.compute_travel_distance(
                 self.id, self.position, task.return_location
             )
+            self._start_active_travel(task.return_location, distance)
             yield from self.movement.move(self.env, self.id, self.position, task.return_location)
             self.position = task.return_location
+            self._clear_active_travel()
             self._drain_battery(distance)
             self.metrics.total_distance_m += distance
             self.metrics.total_travel_time_s += distance / self.config.speed_mps
@@ -296,8 +406,10 @@ class AGV:
 
         # Travel to charger
         self._set_state(AGVState.TRAVELING_TO_CHARGER)
+        self._start_active_travel(charger_node, charge_dist)
         yield from self.movement.move(self.env, self.id, self.position, charger_node)
         self.position = charger_node
+        self._clear_active_travel()
         self._drain_battery(charge_dist)
         self.metrics.total_distance_m += charge_dist
 
