@@ -1,4 +1,5 @@
-"""Warehouse graph representation.
+"""
+Warehouse graph representation.
 
 The warehouse is modeled as a directed graph where:
 - Nodes represent physical locations (storage bays, intersections, stations)
@@ -62,7 +63,7 @@ class WarehouseGraph:
         x: float,
         y: float,
         **attrs,
-    ) -> None:
+    ):
         """Add a node with spatial coordinates and type.
 
         Args:
@@ -72,6 +73,7 @@ class WarehouseGraph:
             y: Y coordinate in meters (north-south).
             **attrs: Additional attributes (e.g., pod_id for storage nodes).
         """
+
         self.graph.add_node(
             node_id,
             node_type=node_type,
@@ -83,10 +85,12 @@ class WarehouseGraph:
 
     def get_node(self, node_id: str) -> dict:
         """Get all attributes of a node."""
+
         return self.graph.nodes[node_id]
 
     def nodes_by_type(self, node_type: NodeType) -> list[str]:
         """Return all node IDs of a given type."""
+
         return [n for n, d in self.graph.nodes(data=True) if d.get("node_type") == node_type]
 
     # ── Edge management ──────────────────────────────────────────────
@@ -110,6 +114,7 @@ class WarehouseGraph:
             capacity: Max concurrent AGVs on this edge.
             **attrs: Additional attributes.
         """
+
         self.graph.add_edge(
             from_node,
             to_node,
@@ -118,7 +123,7 @@ class WarehouseGraph:
             capacity=capacity,
             **attrs,
         )
-        self._distance_cache = None
+        self._distance_cache = None  # invalidate cache
 
     def add_bidirectional_edge(
         self,
@@ -130,6 +135,7 @@ class WarehouseGraph:
         **attrs,
     ) -> None:
         """Add edges in both directions (for highways and wide corridors)."""
+
         self.add_edge(node_a, node_b, edge_type, distance, capacity, **attrs)
         self.add_edge(node_b, node_a, edge_type, distance, capacity, **attrs)
 
@@ -137,22 +143,29 @@ class WarehouseGraph:
 
     @property
     def n_nodes(self) -> int:
+        """Returns the number of nodes in the graph"""
+
         return self.graph.number_of_nodes()
 
     @property
     def n_edges(self) -> int:
+        """Returns the number of edges in the graph"""
+
         return self.graph.number_of_edges()
 
     def neighbors(self, node_id: str) -> list[str]:
         """Return successor nodes (nodes reachable from this node)."""
+
         return list(self.graph.successors(node_id))
 
     def edge_distance(self, from_node: str, to_node: str) -> float:
         """Get distance of a specific edge. Raises KeyError if edge doesn't exist."""
+
         return self.graph.edges[from_node, to_node]["distance"]
 
     def edge_capacity(self, from_node: str, to_node: str) -> int:
         """Get capacity of a specific edge."""
+
         return self.graph.edges[from_node, to_node]["capacity"]
 
     def shortest_path_distance(self, source: str, target: str) -> float:
@@ -164,6 +177,7 @@ class WarehouseGraph:
         Returns:
             Distance in meters. Raises nx.NetworkXNoPath if unreachable.
         """
+
         if self._distance_cache is not None:
             dist = self._distance_cache.get((source, target))
             if dist is not None:
@@ -174,10 +188,12 @@ class WarehouseGraph:
 
     def shortest_path(self, source: str, target: str) -> list[str]:
         """Compute shortest path (list of node IDs) ignoring conflicts."""
+
         return nx.shortest_path(self.graph, source, target, weight="distance")
 
     def precompute_distances(self, sources: list[str] | None = None) -> None:
-        """Precompute shortest-path distances from selected sources to all nodes.
+        """
+        Precompute shortest-path distances from selected sources to all nodes.
 
         This is used by the task assignment module to quickly estimate
         travel distances without running full pathfinding.
@@ -186,6 +202,7 @@ class WarehouseGraph:
             sources: Node IDs to compute from. If None, computes all-pairs
                      (expensive for large graphs — prefer selective computation).
         """
+
         self._distance_cache = {}
         if sources is None:
             # All-pairs — use Floyd-Warshall for dense graphs, Johnson for sparse
@@ -200,7 +217,8 @@ class WarehouseGraph:
                     self._distance_cache[(src, tgt)] = dist
 
     def nearest_node_of_type(self, from_node: str, target_type: NodeType) -> tuple[str, float]:
-        """Find the nearest node of a given type from a source node.
+        """
+        Find the nearest node of a given type from a source node.
 
         Returns:
             Tuple of (node_id, distance).
@@ -208,6 +226,7 @@ class WarehouseGraph:
         Raises:
             ValueError: If no nodes of the target type exist.
         """
+
         candidates = self.nodes_by_type(target_type)
         if not candidates:
             raise ValueError(f"No nodes of type {target_type} in the graph")
@@ -228,7 +247,8 @@ class WarehouseGraph:
         return best_node, best_dist
 
     def storage_nodes_by_zone(self) -> dict[str, list[str]]:
-        """Group storage nodes by proximity zone (near/mid/far from pick stations).
+        """
+        Group storage nodes by proximity zone (near/mid/far from pick stations).
 
         Used for demand-weighted pod placement: high-velocity SKUs
         go in the 'near' zone.
@@ -236,6 +256,7 @@ class WarehouseGraph:
         Returns:
             Dict with keys 'near', 'mid', 'far', each mapping to a list of node IDs.
         """
+
         pick_stations = self.nodes_by_type(NodeType.PICK_STATION)
         storage_nodes = self.nodes_by_type(NodeType.STORAGE)
 
@@ -266,11 +287,13 @@ class WarehouseGraph:
         }
 
     def validate(self) -> list[str]:
-        """Run basic sanity checks on the graph.
+        """
+        Run basic sanity checks on the graph.
 
         Returns:
             List of warning/error messages (empty = all good).
         """
+
         issues = []
 
         # Check connectivity

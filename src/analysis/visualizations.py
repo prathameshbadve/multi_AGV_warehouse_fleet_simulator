@@ -240,6 +240,7 @@ def _draw_edges(ax: Axes, g, positions: dict, show_arrows: bool) -> None:
 
 def _draw_storage(ax: Axes, g, positions: dict) -> None:
     """Draw storage nodes as larger colored squares."""
+    
     nodes = [n for n, d in g.nodes(data=True) if d.get("node_type") == NodeType.STORAGE]
     if not nodes:
         return

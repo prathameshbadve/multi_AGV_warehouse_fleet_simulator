@@ -66,7 +66,7 @@ class OrderConfig:
     items_per_order_min: int = 1
     items_per_order_max: int = 8
     items_per_order_mean: float = 4.0
-    express_fraction: float = 0.1
+    express_fraction: float = 0.1   # Fraction of the total orders with express priority
 
 
 @dataclass(frozen=True)
@@ -81,10 +81,10 @@ class PickStationConfig:
 class SimulationConfig:
     """Simulation runtime parameters."""
 
-    duration_hours: float = 4.0
-    dispatch_interval_s: float = 5.0
-    metrics_interval_s: float = 60.0
-    random_seed: int = 42
+    duration_hours: float = 4.0         # total simulation duration
+    dispatch_interval_s: float = 5.0    # time between consecutive dispatch decisions
+    metrics_interval_s: float = 60.0    # KPI aggregation interval
+    random_seed: int = 42               # random seed for reproducibility
 
     @property
     def duration_s(self) -> float:

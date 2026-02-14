@@ -358,6 +358,7 @@ class GridLayoutGenerator:
         - Top highway: parking BELOW highway, connected to IL (south-bound
           aisle entry). AGVs leaving parking head down into storage.
         """
+        
         n_parking = self.st.n_parking_spots
         if n_parking == 0 or self.n_pairs < 2:
             return
